@@ -17,18 +17,18 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <QFile>
-#include <QString>
-#include <QtGlobal>
-#include <QSharedPointer>
-
 #include "simpleqtcryptor.h"
 #include "simpleqtcryptor_test.h"
 
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <vector>
+
 // Global variables
-QFile *myIn;
-QFile *myOut;
-QFile *myStderr;
+std::istream *myIn;
+std::ostream *myOut;
+std::ostream *myStderr;
 
 char cmdCommand;
 bool benchEncrypt;
@@ -43,7 +43,7 @@ SimpleQtCryptor::Mode cmdMode;
 bool cmdHeader;
 bool cmdVerbose;
 
-QSharedPointer<SimpleQtCryptor::Key> gKey;
+std::shared_ptr<SimpleQtCryptor::Key> gKey;
 
 
 // Function declarations
@@ -54,38 +54,37 @@ bool benchmark();
 bool prepare();
 
 void printVersion() {
-        myStderr->write("SimpleQtCryptor (v1.0.0)\n(C) 2000,2010,2011 Gunnar Thorburn\n    2000 Erik Hemberg\n");
+        *myStderr << ("SimpleQtCryptor (v1.0.0)\n(C) 2000,2010,2011 Gunnar Thorburn\n    2000 Erik Hemberg\n");
 }
 
 void printUsage() {
     if ( !cmdVerbose ) printVersion();
-    myStderr->write("USAGE:\n");
-    myStderr->write("  SimpleQtCryptor -t testfile\n");
-    myStderr->write("  SimpleQtCryptor -b e|d rc532|rc564|spt Mb (benchmark Mb)\n");
-    myStderr->write("  SimpleQtCryptor -e OPTIONS\n");
-    myStderr->write("  SimpleQtCryptor -d OPTIONS\n");
-    myStderr->write("  SimpleQtCryptor -h\n");
-    myStderr->write("OPTIONS:\n");
-    myStderr->write("  -k SecretFile (preferred to -p)\n");
-    myStderr->write("  -p Secret (default = <empty>)\n");
-    myStderr->write("  -i IndataFile\n");
-    myStderr->write("  -o OutdataFile\n");
-    myStderr->write("  -rc5    : use native RC5 algorithm (default)\n");
-    myStderr->write("  -rc532  : use 32-bit RC5\n");
-    myStderr->write("  -rc564  : use 64-bit RC5\n");
-    myStderr->write("  -spt    : use Serpent algorithm\n");
-    myStderr->write("  -cbc    : CBC\n");
-    myStderr->write("  -cfb    : CFB (default)\n");
-    myStderr->write("  -n      : no header\n");
-    myStderr->write("  -v      : verbose\n");
+    *myStderr << ("USAGE:\n");
+    *myStderr << ("  SimpleQtCryptor -t testfile\n");
+    *myStderr << ("  SimpleQtCryptor -b e|d rc532|rc564|spt Mb (benchmark Mb)\n");
+    *myStderr << ("  SimpleQtCryptor -e OPTIONS\n");
+    *myStderr << ("  SimpleQtCryptor -d OPTIONS\n");
+    *myStderr << ("  SimpleQtCryptor -h\n");
+    *myStderr << ("OPTIONS:\n");
+    *myStderr << ("  -k SecretFile (preferred to -p)\n");
+    *myStderr << ("  -p Secret (default = <empty>)\n");
+    *myStderr << ("  -i IndataFile\n");
+    *myStderr << ("  -o OutdataFile\n");
+    *myStderr << ("  -rc5    : use native RC5 algorithm (default)\n");
+    *myStderr << ("  -rc532  : use 32-bit RC5\n");
+    *myStderr << ("  -rc564  : use 64-bit RC5\n");
+    *myStderr << ("  -spt    : use Serpent algorithm\n");
+    *myStderr << ("  -cbc    : CBC\n");
+    *myStderr << ("  -cfb    : CFB (default)\n");
+    *myStderr << ("  -n      : no header\n");
+    *myStderr << ("  -v      : verbose\n");
 }
 
 
 int main(int argc, char *argv[]) {
-    myStderr = new QFile(0);
-    myStderr->open(2, QIODevice::WriteOnly);
-    myIn = 0;
-    myOut = 0;
+    myStderr = &std::cerr;
+    myIn = nullptr;
+    myOut = nullptr;
 
     cmdCommand = 'x';
     cmdSecret = 0;
@@ -249,21 +248,30 @@ failure:
 bool prepare() {
     if ( 0 == cmdSecret && 0 == cmdSecretFile ) {
         if (cmdVerbose) myStderr->write("Using empty Secret\n");
-        gKey = QSharedPointer<SimpleQtCryptor::Key>(new SimpleQtCryptor::Key(QString("")));
+        gKey = std::make_shared<SimpleQtCryptor::Key>(std::string(""));
     } else if ( 0 != cmdSecret && 0 != cmdSecretFile ) {
-        myStderr->write("Error: use either -k or -p\n");
+        *myStderr << ("Error: use either -k or -p\n");
     } else if ( 0 != cmdSecret ) {
-        gKey = QSharedPointer<SimpleQtCryptor::Key>(new SimpleQtCryptor::Key(QString::fromAscii(cmdSecret)));
+        gKey = std::make_shared<SimpleQtCryptor::Key>(std::string(cmdSecret));
     } else {
-        QFile kfile(QString::fromAscii(cmdSecretFile));
-        if (!kfile.open(QIODevice::ReadOnly)) {
-            myStderr->write("failed to open secret file ");
-            myStderr->write(cmdSecretFile);
-            myStderr->write("\n");
+        std::ifstream kfile(cmdSecretFile);
+        if (!kfile.is_open()) {
+            *myStderr << ("failed to open secret file ");
+            *myStderr << (cmdSecretFile);
+            *myStderr << ("\n");
             return false;
         }
-        QByteArray k = kfile.readAll();
-        gKey = QSharedPointer<SimpleQtCryptor::Key>(new SimpleQtCryptor::Key(k));
+        
+        std::vector<uint8_t> k;
+        if (!kfile.eof()) {
+            kfile.seekg(0, std::ios_base::end);
+            std::streampos fileSize = file.tellg();
+            k.resize(fileSize);
+
+            file.seekg(0, std::ios_base::beg);
+            file.read(&k[0], fileSize);
+        }
+        gKey = std::make_shared<SimpleQtCryptor::Key>(k);
         if (cmdVerbose) {
             myStderr->write("using contents of  ");
             myStderr->write(cmdSecretFile);
@@ -272,8 +280,7 @@ bool prepare() {
     }
 
     if ( 0 == cmdInfile ) {
-        myIn = new QFile(0);
-        myIn->open(0, QIODevice::ReadOnly);
+        myIn = &std::cin;
     } else {
         myIn = new QFile(QString::fromAscii(cmdInfile));
         if ( ! myIn->open(QIODevice::ReadOnly) ) {

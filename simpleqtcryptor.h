@@ -17,6 +17,9 @@
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <list>
+#include <memory>
+#include <vector>
 
 // remove this line if you do not want RC5
 #define WITHRC5
@@ -30,13 +33,6 @@
 
 #ifndef SIMPLEQTCRYPTOR_H
 #define SIMPLEQTCRYPTOR_H
-
-#include <QtGlobal>
-#include <QByteArray>
-#include <QSharedPointer>
-#include <QObject>
-
-class QString;
 
 namespace SimpleQtCryptor {
 
@@ -95,17 +91,16 @@ enum State {
 class Info {
 public:
     static Algorithm fastRC5();
-    static QString errorText(Error e);
+    static std::string errorText(Error e);
 };
 
 
 
-class Key : public QObject {
-    Q_OBJECT
+class Key {
 public:
     Key();
-    Key(const QByteArray &key);
-    Key(const QString &key);
+    Key(const std::vector<uint8_t> &key);
+    Key(const std::string &key);
     ~Key();
 
     // not for use by end application
@@ -116,16 +111,16 @@ public:
     void expandKeySerpent();
 
     // variables
-    QByteArray key;
+    std::vector<uint8_t> key;
 #ifdef WITHRC5
-    QByteArray keyRc5;
-    quint32 *s32;
-    quint64 *s64;
+    std::vector<uint8_t> keyRc5;
+    uint32_t *s32;
+    uint64_t *s64;
 #endif
-    QByteArray keySerpent;
-    quint32 *serpent;
+    std::vector<uint8_t> keySerpent;
+    uint32_t *serpent;
 private:
-    QByteArray resizeKey(int ks);
+    std::vector<uint8_t> resizeKey(int ks);
 };
 
 
@@ -141,15 +136,14 @@ private:
  *    (typically ErrorInvalidKey or ErrorNotEnoughData);
  *    as long as you use end=true, you never need to reset().
  */
-class Encryptor : public QObject {
-    Q_OBJECT
+class Encryptor {
 public:
-    Encryptor(QSharedPointer<Key> k, Algorithm a, Mode m, Checksum c);
+    Encryptor(std::shared_ptr<Key> k, Algorithm a, Mode m, Checksum c);
     ~Encryptor();   
-    Error encrypt(const QByteArray &plain, QByteArray &cipher, bool end);
+    Error encrypt(const std::vector<uint8_t> &plain, std::vector<uint8_t> &cipher, bool end);
     void reset();
 private:
-    QSharedPointer<Key> key;
+    std::shared_ptr<Key> key;
     Algorithm algorithm;
     Mode mode;
     Checksum checksum;
@@ -165,29 +159,28 @@ class DecryptorWizardEntry;
 class DecryptorWizard {
 public:
     DecryptorWizard();
-    DecryptorWizard(QSharedPointer<Key> k, Algorithm a = DetectAlgorithm, Mode m = DetectMode);
+    DecryptorWizard(std::shared_ptr<Key> k, Algorithm a = DetectAlgorithm, Mode m = DetectMode);
     ~DecryptorWizard();
 
-    void addParameters(QSharedPointer<Key> k, Algorithm a = DetectAlgorithm, Mode m = DetectMode);
+    void addParameters(std::shared_ptr<Key> k, Algorithm a = DetectAlgorithm, Mode m = DetectMode);
 
-    Error decrypt(const QByteArray &cipher, QByteArray &plain, QSharedPointer<Decryptor> &decryptor, bool end = false);
-    Error decryptToEnd(const QByteArray &cipher, QByteArray &plain);
+    Error decrypt(const std::vector<uint8_t> &cipher, std::vector<uint8_t> &plain, std::shared_ptr<Decryptor> &decryptor, bool end = false);
+    Error decryptToEnd(const std::vector<uint8_t> &cipher, std::vector<uint8_t> &plain);
 private:
-    QList<DecryptorWizardEntry*> entries;
+    std::list<DecryptorWizardEntry*> entries;
 };
 
 
 
-class Decryptor : public QObject {
-    Q_OBJECT
+class Decryptor {
 public:
-    Decryptor(QSharedPointer<Key> k, Algorithm a, Mode m);
+    Decryptor(std::shared_ptr<Key> k, Algorithm a, Mode m);
     ~Decryptor();
-    Error decrypt(const QByteArray &cipher, QByteArray &plain, bool end);
+    Error decrypt(const std::vector<uint8_t> &cipher, std::vector<uint8_t> &plain, bool end);
     void reset();
     Checksum getChecksumType();
 private:
-    QSharedPointer<Key> key;
+    std::shared_ptr<Key> key;
     Algorithm algorithm;
     Mode mode;
     State state;
@@ -199,8 +192,8 @@ private:
 
 class InitializationVector {
 public:
-    static QByteArray getVector8();
-    static QByteArray getVector16();
+    static std::vector<uint8_t> getVector8();
+    static std::vector<uint8_t> getVector16();
     static void initiate();
 };
 
@@ -214,40 +207,40 @@ public:
  */
 class LayerMode {
 public:
-    virtual QByteArray encrypt(const QByteArray plain, bool end) = 0;
-    virtual QByteArray decrypt(const QByteArray cipher, bool end) = 0;
+    virtual std::vector<uint8_t> encrypt(const std::vector<uint8_t> plain, bool end) = 0;
+    virtual std::vector<uint8_t> decrypt(const std::vector<uint8_t> cipher, bool end) = 0;
     virtual void reset() = 0;
     virtual ~LayerMode() {};
 };
 
 class CFB : public LayerMode {
 public:
-    CFB(QSharedPointer<Key> k, Algorithm a);
+    CFB(std::shared_ptr<Key> k, Algorithm a);
     ~CFB();
-    QByteArray encrypt(const QByteArray plain, bool end = false);
-    QByteArray decrypt(const QByteArray cipher, bool end = false);
+    std::vector<uint8_t> encrypt(const std::vector<uint8_t> plain, bool end = false);
+    std::vector<uint8_t> decrypt(const std::vector<uint8_t> cipher, bool end = false);
     void reset();
 private:
-    QByteArray buffer;
+    std::vector<uint8_t> buffer;
     int bufferpos;
     Algorithm algorithm;
-    QSharedPointer<Key> key;
+    std::shared_ptr<Key> key;
 };
 
 class CBC : public LayerMode {
 public:
-    CBC(QSharedPointer<Key> k, Algorithm a);
+    CBC(std::shared_ptr<Key> k, Algorithm a);
     ~CBC();
-    QByteArray encrypt(const QByteArray plain, bool end);
-    QByteArray decrypt(const QByteArray cipher, bool end);
+    std::vector<uint8_t> encrypt(const std::vector<uint8_t> plain, bool end);
+    std::vector<uint8_t> decrypt(const std::vector<uint8_t> cipher, bool end);
     void reset();
 private:
-    QByteArray buffer;
-    QByteArray cbcBuffer;
-    QByteArray padHostageBuffer;
+    std::vector<uint8_t> buffer;
+    std::vector<uint8_t> cbcBuffer;
+    std::vector<uint8_t> padHostageBuffer;
     int worksize;
     Algorithm algorithm;
-    QSharedPointer<Key> key;
+    std::shared_ptr<Key> key;
 };
 
 
@@ -255,25 +248,25 @@ private:
 
 #ifdef WITHRC5
 // input replaced by output
-void rc5_32_encrypt_2w(quint32 &X1, quint32 &X2, const quint32 *s);
-void rc5_64_encrypt_2w(quint64 &X1, quint64 &X2, const quint64 *s);
-void rc5_32_decrypt_2w(quint32 &X1, quint32 &X2, const quint32 *s);
-void rc5_64_decrypt_2w(quint64 &X1, quint64 &X2, const quint64 *s);
+void rc5_32_encrypt_2w(uint32_t &X1, uint32_t &X2, const uint32_t *s);
+void rc5_64_encrypt_2w(uint64_t &X1, uint64_t &X2, const uint64_t *s);
+void rc5_32_decrypt_2w(uint32_t &X1, uint32_t &X2, const uint32_t *s);
+void rc5_64_decrypt_2w(uint64_t &X1, uint64_t &X2, const uint64_t *s);
 
-void rc5_32_encrypt_8b(const uchar *plain8, uchar *cipher8, const quint32 *s);
-void rc5_64_encrypt_16b(const uchar *plain16, uchar *cipher16, const quint64 *s);
-void rc5_32_decrypt_8b(const uchar *cipher8, uchar *plain8, const quint32 *s);
-void rc5_64_decrypt_16b(const uchar *cipher16, uchar *plain16, const quint64 *s);
+void rc5_32_encrypt_8b(const uint8_t *plain8, uint8_t *cipher8, const uint32_t *s);
+void rc5_64_encrypt_16b(const uint8_t *plain16, uint8_t *cipher16, const uint64_t *s);
+void rc5_32_decrypt_8b(const uint8_t *cipher8, uint8_t *plain8, const uint32_t *s);
+void rc5_64_decrypt_16b(const uint8_t *cipher16, uint8_t *plain16, const uint64_t *s);
 #endif
 
-void serpent_encrypt_4w(quint32 &X1, quint32 &X2,
-                        quint32 &X3, quint32 &X4, const quint32 *s);
+void serpent_encrypt_4w(uint32_t &X1, uint32_t &X2,
+                        uint32_t &X3, uint32_t &X4, const uint32_t *s);
 
-void serpent_decrypt_4w(quint32 &X1, quint32 &X2,
-                        quint32 &X3, quint32 &X4, const quint32 *s);
+void serpent_decrypt_4w(uint32_t &X1, uint32_t &X2,
+                        uint32_t &X3, uint32_t &X4, const uint32_t *s);
 
-void serpent_encrypt_16b(const uchar *plain16, uchar *cipher16, const quint32 *s);
-void serpent_decrypt_16b(const uchar *cipher16, uchar *plain16, const quint32 *s);
+void serpent_encrypt_16b(const uint8_t *plain16, uint8_t *cipher16, const uint32_t *s);
+void serpent_decrypt_16b(const uint8_t *cipher16, uint8_t *plain16, const uint32_t *s);
 
 #ifdef WITH_SERPENT_PRINT_SBOX_H
 void serpent_print_sbox_h();

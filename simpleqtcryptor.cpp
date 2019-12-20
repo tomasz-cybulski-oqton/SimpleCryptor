@@ -18,18 +18,11 @@
  */
 #include "simpleqtcryptor.h"
 
+#include <boost/uuid/sha1.hpp>
+
 #ifdef WITH_SERPENT_INCLUDE_FAST_SBOX
 #include "serpent_sbox.h"
 #endif
-
-#include <QString>
-#include <QCryptographicHash>
-#include <QtEndian>
-#include <QDate>
-#include <QTime>
-
-#include <QDebug>
-
 
 #define ROUNDS 32
 #define KEYSIZE_RC5 20
@@ -39,31 +32,39 @@
 
 #define P32 0xb7e17163
 #define Q32 0x9e3779b9
-#define P64 Q_UINT64_C(0xb7e151628aed2a6b);
-#define Q64 Q_UINT64_C(0x9e3779b97f4a7c15);
+#define P64 0xb7e151628aed2a6b;
+#define Q64 0x9e3779b97f4a7c15;
 
 #define ROTL32(x,y) (((x)<<(y)) | ((x)>>(32-(y))))
 #define ROTR32(x,y) (((x)>>(y)) | ((x)<<(32-(y))))
 #define ROTL64(x,y) (((x)<<(y)) | ((x)>>(64-(y))))
 #define ROTR64(x,y) (((x)>>(y)) | ((x)<<(64-(y))))
 
+#if __BIG_ENDIAN__
+# define fromLittleEndian32(x) __bswap_32(x)
+# define fromLittleEndian64(x) __bswap_64(x)
+#else if __LITTLE_ENDIAN__
+# define fromLittleEndian32(x) (x)
+# define fromLittleEndian64(x) (x)
+#endif
+
 namespace SimpleQtCryptor {
 
 #ifdef WITHRC5
-QByteArray header_RC5_32_32_20  = QString("RC5/32/32/20:").toAscii();
-QByteArray header_RC5_64_32_20  = QString("RC5/64/32/20:").toAscii();
+std::vector<uint8_t> header_RC5_32_32_20  = {'R','C','5','/','3','2','/','3','2','/','2','0',':'};
+std::vector<uint8_t> header_RC5_64_32_20  = {'R','C','5','/','6','4','/','3','2','/','2','0',':'};
 #endif
-QByteArray header_SERPENT_32  = QString("SERPENT/32:").toAscii();
+std::vector<uint8_t> header_SERPENT_32  = {'S','E','R','P','E','N','T','/','3','2',':'};
 
-QByteArray header_CBC  = QString("CBC:PADN::").toAscii();
-QByteArray header_CFB  = QString("CFB::").toAscii();
+std::vector<uint8_t> header_CBC  = {'C','B','C',':','P','A','D','N',':',':'};
+std::vector<uint8_t> header_CFB  = {'C','F','B',':',':'};
 
 
 #ifdef WITH_SERPENT_FAST_SBOX
-inline quint32 serpent_sbox_fast(int sbox, quint32 X);
+inline uint32_t serpent_sbox_fast(int sbox, uint32_t X);
 #else
-void serpent_sbox_it(int sbox, quint32 &X1, quint32 &X2,
-                               quint32 &X3, quint32 &X4);
+void serpent_sbox_it(int sbox, uint32_t &X1, uint32_t &X2,
+                               uint32_t &X3, uint32_t &X4);
 #endif
 
 #ifdef WITHRC5
@@ -76,30 +77,30 @@ Algorithm Info::fastRC5() {
 }
 #endif
 
-QString Info::errorText(Error e) {
+std::string Info::errorText(Error e) {
     switch (e) {
     case NoError:
-        return QString("NoError");
+        return std::string("NoError");
     case ErrorNoAlgorithm:
-        return QString("ErrorNoAlgorithm");
+        return std::string("ErrorNoAlgorithm");
     case ErrorNoMode:
-        return QString("ErrorNoMode");
+        return std::string("ErrorNoMode");
     case ErrorInvalidKey:
-        return QString("ErrorInvalidKey");
+        return std::string("ErrorInvalidKey");
     case ErrorNotEnoughData:
-        return QString("ErrorNotEnoughData");
+        return std::string("ErrorNotEnoughData");
     case ErrorModeNotImplemented:
-        return QString("ErrorModeNotImplemented");
+        return std::string("ErrorModeNotImplemented");
     case ErrorAlgorithmNotImplemented:
-        return QString("ErrorAlgorithmNotImplemented");
+        return std::string("ErrorAlgorithmNotImplemented");
     case ErrorChecksumNotImplemented:
-        return QString("ErrorChecksumNotImplemented");
+        return std::string("ErrorChecksumNotImplemented");
     case ErrorAlreadyError:
-        return QString("ErrorAlreadyError");
+        return std::string("ErrorAlreadyError");
     default:
-        return QString("UnknownError");
+        return std::string("UnknownError");
     }
-    return QString();
+    return std::string();
 }
 
 
@@ -111,7 +112,7 @@ Key::Key() {
     serpent = 0;
 }
 
-Key::Key(const QByteArray &k) {
+Key::Key(const std::vector<uint8_t> &k) {
     key = k;
 #ifdef WITHRC5
     s32 = 0;
@@ -120,10 +121,18 @@ Key::Key(const QByteArray &k) {
     serpent = 0;
 }
 
-Key::Key(const QString &k) {
-    QCryptographicHash qch(QCryptographicHash::Sha1);
-    qch.addData(k.toUtf8());
-    key = qch.result();
+Key::Key(const std::string &k) {
+    boost::uuids::detail::sha1 qch;
+    qch.process_bytes(k.c_str(), k.size());
+    key.resize(20);
+    unsigned digest[5] = {0};
+    qch.get_digest(digest);
+    for (int i = 0; i < 5; ++i) {
+        key[4 * i + 0] = digest[i] & 0xFF000000 >> 24;
+        key[4 * i + 1] = digest[i] & 0x00FF0000 >> 16;
+        key[4 * i + 2] = digest[i] & 0x0000FF00 >>  8;
+        key[4 * i + 2] = digest[i] & 0x000000FF >>  0;
+    }
 #ifdef WITHRC5
     s32 = 0;
     s64 = 0;
@@ -140,8 +149,8 @@ Key::~Key() {
 }
 
 
-QByteArray Key::resizeKey(int ks) {
-    QByteArray newKey(ks, 0);
+std::vector<uint8_t> Key::resizeKey(int ks) {
+    std::vector<uint8_t> newKey(ks, 0);
     unsigned char *ok = (unsigned char *)(key.data());
     unsigned char *nk = (unsigned char *)(newKey.data());
     for ( int i = 0 ; i < key.size() ; i++ ) {
@@ -156,16 +165,16 @@ void Key::expandKeyRc532() {
     if ( KEYSIZE_RC5 != keyRc5.size() ) {
         keyRc5 = resizeKey(KEYSIZE_RC5);
     } 
-    s32 = new quint32[SSIZE_RC5];
-    quint32 *s = s32;
+    s32 = new uint32_t[SSIZE_RC5];
+    uint32_t *s = s32;
 
-    unsigned char *k = (unsigned char *)(keyRc5.data());
-    quint32 L[5];
-    L[0] = qFromLittleEndian<quint32>(k);
-    L[1] = qFromLittleEndian<quint32>(k+4);
-    L[2] = qFromLittleEndian<quint32>(k+8);
-    L[3] = qFromLittleEndian<quint32>(k+12);
-    L[4] = qFromLittleEndian<quint32>(k+16);
+    uint32_t *k = (uint32_t *)(keyRc5.data());
+    uint32_t L[5];
+    L[0] = fromLittleEndian32(*(k+0));
+    L[1] = fromLittleEndian32(*(k+1));
+    L[2] = fromLittleEndian32(*(k+2));
+    L[3] = fromLittleEndian32(*(k+3));
+    L[4] = fromLittleEndian32(*(k+4));
 
     s[0] = P32;
     for ( int i = 1 ; i < SSIZE_RC5 ; i++ ) {
@@ -173,7 +182,7 @@ void Key::expandKeyRc532() {
     }
 
     int i=0 , j=0;
-    quint32 A=0 , B=0;
+    uint32_t A=0 , B=0;
 
     for ( int x = 0 ; x < ROUNDS ; x++ ) {
         A = s[i] = ROTL32(s[i] + (A+B), 3);
@@ -185,19 +194,20 @@ void Key::expandKeyRc532() {
 #endif
 
 #ifdef WITHRC5
+//TODO
 void Key::expandKeyRc564() {
     if (s64) return;
     if ( KEYSIZE_RC5 != keyRc5.size() ) {
         keyRc5 = resizeKey(KEYSIZE_RC5);
     } 
-    s64 = new quint64[SSIZE_RC5];
-    quint64 *s = s64;
+    s64 = new uint64_t[SSIZE_RC5];
+    uint64_t *s = s64;
 
-    unsigned char *k = (unsigned char *)(keyRc5.data());
-    quint64 L[3];
-    L[0] = qFromLittleEndian<quint64>(k);
-    L[1] = qFromLittleEndian<quint64>(k+8);
-    L[2] = qFromLittleEndian<quint32>(k+16);
+    uint64_t *k = (uint64_t *)(keyRc5.data());
+    uint64_t L[3];
+    L[0] = fromLittleEndian64(*(k));
+    L[1] = fromLittleEndian64(*(k+8));
+    L[2] = fromLittleEndian64(*(k+16));
 
     s[0] = P64;
     for ( int i = 1 ; i < SSIZE_RC5 ; i++ ) {
@@ -205,7 +215,7 @@ void Key::expandKeyRc564() {
     }
 
     int i=0 , j=0;
-    quint64 A=0 , B=0;
+    uint64_t A=0 , B=0;
 
     for ( int x = 0 ; x < ROUNDS ; x++ ) {
         A = s[i] = ROTL64(s[i] + (A+B), 3);
@@ -218,19 +228,19 @@ void Key::expandKeyRc564() {
 
 
 void Key::expandKeySerpent() {
-    quint32 i;
-    quint32 tmp;
-    quint32 *s;
+    uint32_t i;
+    uint32_t tmp;
+    uint32_t *s;
     if (serpent) return;
     if ( KEYSIZE_SERPENT != keySerpent.size() ) {
         keySerpent = resizeKey(KEYSIZE_SERPENT);
     } 
-    serpent = new quint32[SSIZE_SERPENT];
-    s = new quint32[SSIZE_SERPENT + 8];
+    serpent = new uint32_t[SSIZE_SERPENT];
+    s = new uint32_t[SSIZE_SERPENT + 8];
 
-    unsigned char *k = (unsigned char *)(keySerpent.data());
+    uint32_t *k = (uint32_t *)(keySerpent.data());
     for ( i=0 ; i<8 ; i++ ) {
-        s[i] = qFromLittleEndian<quint32>(k + 4*i);
+        s[i] = fromLittleEndian32(*(k + 4*i));
     }
 
     for(i=8 ; i < SSIZE_SERPENT + 8 ; i++) {
@@ -255,7 +265,7 @@ void Key::expandKeySerpent() {
 
 /* *** ENCRYPTOR *** */
 
-Encryptor::Encryptor(QSharedPointer<Key> k, Algorithm a, Mode m, Checksum c) {
+Encryptor::Encryptor(std::shared_ptr<Key> k, Algorithm a, Mode m, Checksum c) {
     key = k;
     algorithm = a;
     mode = m;
@@ -273,22 +283,22 @@ Encryptor::~Encryptor() {
     delete modex;
 }
 
-Error Encryptor::encrypt(const QByteArray &plain, QByteArray &cipher, bool end) {
-    QByteArray tmpIn;
+Error Encryptor::encrypt(const std::vector<uint8_t> &plain, std::vector<uint8_t> &cipher, bool end) {
+    std::vector<uint8_t> tmpIn;
     switch ( state ) {
     case StateReset:
 
         switch ( algorithm ) {
 #ifdef WITHRC5
         case RC5_32_32_20:
-            tmpIn.append(header_RC5_32_32_20);
+            tmpIn.insert(std::end(tmpIn), std::begin(header_RC5_32_32_20), std::end(header_RC5_32_32_20));
             break;
         case RC5_64_32_20:
-            tmpIn.append(header_RC5_64_32_20);
+            tmpIn.insert(std::end(tmpIn), std::begin(header_RC5_64_32_20), std::end(header_RC5_64_32_20));
             break;
 #endif
         case SERPENT_32:
-            tmpIn.append(header_SERPENT_32);
+            tmpIn.insert(std::end(tmpIn), std::begin(header_SERPENT_32), std::end(header_SERPENT_32));
             break;
         case NoAlgorithm:
         case DetectAlgorithm:
@@ -301,11 +311,11 @@ Error Encryptor::encrypt(const QByteArray &plain, QByteArray &cipher, bool end) 
 
         switch ( mode ) {
         case ModeCBC:
-            tmpIn.append(header_CBC);
+            tmpIn.insert(std::end(tmpIn), std::begin(header_CBC), std::end(header_CBC));
             if ( 0 == modex) modex = new CBC(key,algorithm);
             break;
         case ModeCFB:
-            tmpIn.append(header_CFB);
+            tmpIn.insert(std::end(tmpIn), std::begin(header_CFB), std::end(header_CFB));
             if ( 0 == modex) modex = new CFB(key, algorithm);
             break;
         case NoMode:
@@ -323,7 +333,7 @@ Error Encryptor::encrypt(const QByteArray &plain, QByteArray &cipher, bool end) 
 
         state = StateOn;
     case StateOn:
-        tmpIn.append(plain);
+        tmpIn.insert(std::end(tmpIn), std::begin(plain), std::end(plain));
         cipher = modex->encrypt(tmpIn, end);
         break;
     case StateError:
@@ -340,7 +350,7 @@ Error Encryptor::encrypt(const QByteArray &plain, QByteArray &cipher, bool end) 
 
 /* *** DECRYPTOR *** */
 
-Decryptor::Decryptor(QSharedPointer<Key> k, Algorithm a, Mode m) {
+Decryptor::Decryptor(std::shared_ptr<Key> k, Algorithm a, Mode m) {
     key = k;
     algorithm = a;
     mode = m;
@@ -357,11 +367,11 @@ Checksum Decryptor::getChecksumType() {
     return checksum;
 }
 
-Error Decryptor::decrypt(const QByteArray &cipher, QByteArray &plain, bool end) {
-    QByteArray expectHeader;
-    QByteArray remainingFromHeader;
-    QByteArray tmpIn;
-    QByteArray tmpOut;
+Error Decryptor::decrypt(const std::vector<uint8_t> &cipher, std::vector<uint8_t> &plain, bool end) {
+    std::vector<uint8_t> expectHeader;
+    std::vector<uint8_t> remainingFromHeader;
+    std::vector<uint8_t> tmpIn;
+    std::vector<uint8_t> tmpOut;
     int neededForHeader = -1;
     int neededForIv = -1;
 
@@ -370,16 +380,16 @@ Error Decryptor::decrypt(const QByteArray &cipher, QByteArray &plain, bool end) 
         switch ( algorithm ) {
 #ifdef WITHRC5
         case RC5_32_32_20:
-            expectHeader.append(header_RC5_32_32_20);
+            expectHeader.insert(std::end(expectHeader), std::begin(header_RC5_32_32_20), std::end(header_RC5_32_32_20));
             neededForIv = 8;
             break;
         case RC5_64_32_20:
-            expectHeader.append(header_RC5_64_32_20);
+            expectHeader.insert(std::end(expectHeader), std::begin(header_RC5_64_32_20), std::end(header_RC5_64_32_20));
             neededForIv = 16;
             break;
 #endif
         case SERPENT_32:
-            expectHeader.append(header_SERPENT_32);
+            expectHeader.insert(std::end(expectHeader), std::begin(header_SERPENT_32), std::end(header_SERPENT_32));
             neededForIv = 16;
             break;
         case NoAlgorithm:
@@ -393,12 +403,12 @@ Error Decryptor::decrypt(const QByteArray &cipher, QByteArray &plain, bool end) 
 
         switch ( mode ) {
         case ModeCBC:
-            expectHeader.append(header_CBC);
+            expectHeader.insert(std::end(expectHeader), std::begin(header_CBC), std::end(header_CBC));
             neededForHeader = (((neededForIv + expectHeader.size() - 1) / neededForIv) + 1) * neededForIv;
             if ( 0 == modex) modex = new CBC(key, algorithm);
             break;
         case ModeCFB:
-            expectHeader.append(header_CFB);
+            expectHeader.insert(std::end(expectHeader), std::begin(header_CFB), std::end(header_CFB));
             neededForHeader = neededForIv + expectHeader.size();
             if ( 0 == modex) modex = new CFB(key, algorithm);
             break;
@@ -415,12 +425,12 @@ Error Decryptor::decrypt(const QByteArray &cipher, QByteArray &plain, bool end) 
             return ErrorNotEnoughData;
         }
 
-        tmpOut = modex->decrypt(cipher.left(neededForHeader), false);
+        tmpOut = modex->decrypt(std::vector<uint8_t>(cipher.begin(), cipher.begin() + neededForHeader), false);
 
-        if ( tmpOut.startsWith(expectHeader) ) {
-            remainingFromHeader = tmpOut.right(tmpOut.size() - expectHeader.size());
+        if ( std::equal(tmpOut.begin(), tmpOut.begin() + expectHeader.size(), expectHeader.begin()) ) {
+            remainingFromHeader = std::vector<uint8_t>(tmpOut.begin() + expectHeader.size(), tmpOut.end());
             tmpOut.clear();
-            tmpIn = cipher.right(cipher.size() - neededForHeader);
+            tmpIn = std::vector<uint8_t>(cipher.begin() + neededForHeader, cipher.end());
             state = StateOn;
         } else {
             state = StateError;
@@ -429,7 +439,7 @@ Error Decryptor::decrypt(const QByteArray &cipher, QByteArray &plain, bool end) 
         }
 
     case StateOn:
-        if ( tmpIn.isEmpty() ) {
+        if ( tmpIn.empty() ) {
             tmpIn = cipher;
         }
         tmpOut = modex->decrypt(tmpIn, end);
@@ -438,8 +448,8 @@ Error Decryptor::decrypt(const QByteArray &cipher, QByteArray &plain, bool end) 
     default:
         return ErrorAlreadyError;
     }
-    if ( ! remainingFromHeader.isEmpty() ) {
-        tmpOut.prepend(remainingFromHeader);
+    if ( ! remainingFromHeader.empty() ) {
+        tmpOut.insert(std::end(tmpOut), std::begin(remainingFromHeader), std::end(remainingFromHeader));
     }
     if (end) {
         state = StateReset;
@@ -453,7 +463,7 @@ Error Decryptor::decrypt(const QByteArray &cipher, QByteArray &plain, bool end) 
 
 class DecryptorWizardEntry {
 public:
-    QSharedPointer<Key> key;
+    std::shared_ptr<Key> key;
     Algorithm alg;
     Mode mode;
     Checksum csum;
@@ -465,25 +475,25 @@ public:
 DecryptorWizard::DecryptorWizard() {
 }
 
-DecryptorWizard::DecryptorWizard(QSharedPointer<Key> k, Algorithm a, Mode m) {
+DecryptorWizard::DecryptorWizard(std::shared_ptr<Key> k, Algorithm a, Mode m) {
     addParameters(k, a, m);
 }
 
 DecryptorWizard::~DecryptorWizard() {
-    for ( int i=0 ; i < entries.size() ; i++ ) {
-        delete entries.at(i);
+    for (auto entry : entries) {
+        delete entry;
     }
 }
 
-void DecryptorWizard::addParameters(QSharedPointer<Key> k, Algorithm a, Mode m) {
+void DecryptorWizard::addParameters(std::shared_ptr<Key> k, Algorithm a, Mode m) {
     DecryptorWizardEntry *dwe = new DecryptorWizardEntry();
     dwe->key = k;
     dwe->alg = a;
     dwe->mode = m;
-    entries.append(dwe);
+    entries.push_back(dwe);
 }
 
-Error DecryptorWizard::decrypt(const QByteArray &cipher, QByteArray &plain, QSharedPointer<Decryptor> &decryptor, bool end) {
+Error DecryptorWizard::decrypt(const std::vector<uint8_t> &cipher, std::vector<uint8_t> &plain, std::shared_ptr<Decryptor> &decryptor, bool end) {
 #ifdef WITHRC5
     Algorithm aList[3] = { RC5_32_32_20, RC5_64_32_20, SERPENT_32 };
     int aL = 3;
@@ -506,7 +516,7 @@ Error DecryptorWizard::decrypt(const QByteArray &cipher, QByteArray &plain, QSha
         dxError = dx->decrypt(cipher, plain, end);
         switch (dxError) {
         case NoError:
-            decryptor = QSharedPointer<Decryptor>(dx);
+            decryptor = std::shared_ptr<Decryptor>(dx);
             return NoError;
         case ErrorNotEnoughData:
             retError = ErrorNotEnoughData;
@@ -525,8 +535,8 @@ Error DecryptorWizard::decrypt(const QByteArray &cipher, QByteArray &plain, QSha
     return retError;
 }
 
-Error DecryptorWizard::decryptToEnd(const QByteArray &cipher, QByteArray &plain) {
-    QSharedPointer<Decryptor> qspd;
+Error DecryptorWizard::decryptToEnd(const std::vector<uint8_t> &cipher, std::vector<uint8_t> &plain) {
+    std::shared_ptr<Decryptor> qspd;
     Error er = decrypt(cipher, plain, qspd, true);
     return er;
 }
@@ -534,37 +544,37 @@ Error DecryptorWizard::decryptToEnd(const QByteArray &cipher, QByteArray &plain)
 
 /* *** INITIALIZATION VECTOR *** */
 
-QByteArray InitializationVector::getVector8() {
-    QByteArray ret(8, 0);
-    quint32 A = ((quint32)(qrand())) ^ ((quint32)(QTime::currentTime().msecsTo(QTime(23,59,59,999))));
-    quint32 B = ((quint32)(qrand())) ^ ((quint32)(QDate::currentDate().daysTo(QDate(2999,12,31))));
-    qToLittleEndian(A, (uchar *)(ret.data()));
-    qToLittleEndian(B, (uchar *)(ret.data() + 4));
-    ret[0] = ( (uchar)(ret[0]) | 128 );
+std::vector<uint8_t> InitializationVector::getVector8() {
+    std::vector<uint8_t> ret(8, 0);
+    uint32_t A = ((uint32_t)(std::rand())) ^ ((uint32_t)(QTime::currentTime().msecsTo(QTime(23,59,59,999))));
+    uint32_t B = ((uint32_t)(std::rand())) ^ ((uint32_t)(QDate::currentDate().daysTo(QDate(2999,12,31))));
+    qToLittleEndian(A, (uint8_t *)(ret.data()));
+    qToLittleEndian(B, (uint8_t *)(ret.data() + 4));
+    ret[0] = ( (uint8_t)(ret[0]) | 128 );
     return ret;
 }
 
-QByteArray InitializationVector::getVector16() {
-    QByteArray ret(16, 0);
-    quint32 A = ((quint32)(qrand())) ^ ((quint32)(QTime::currentTime().msecsTo(QTime(23,59,59,999))));
-    quint32 B = ((quint32)(qrand())) ^ ((quint32)(QDate::currentDate().daysTo(QDate(2999,12,31))));
-    quint32 C = (quint32)(qrand());
-    quint32 D = (quint32)(qrand());
-    qToLittleEndian(A, (uchar *)(ret.data()));
-    qToLittleEndian(B, (uchar *)(ret.data() + 4));
-    qToLittleEndian(C, (uchar *)(ret.data() + 8));
-    qToLittleEndian(D, (uchar *)(ret.data() + 12));
-    ret[0] = ( (uchar)(ret[0]) | 128 );
+std::vector<uint8_t> InitializationVector::getVector16() {
+    std::vector<uint8_t> ret(16, 0);
+    uint32_t A = ((uint32_t)(std::rand())) ^ ((uint32_t)(QTime::currentTime().msecsTo(QTime(23,59,59,999))));
+    uint32_t B = ((uint32_t)(std::rand())) ^ ((uint32_t)(QDate::currentDate().daysTo(QDate(2999,12,31))));
+    uint32_t C = (uint32_t)(std::rand());
+    uint32_t D = (uint32_t)(std::rand());
+    qToLittleEndian(A, (uint8_t *)(ret.data()));
+    qToLittleEndian(B, (uint8_t *)(ret.data() + 4));
+    qToLittleEndian(C, (uint8_t *)(ret.data() + 8));
+    qToLittleEndian(D, (uint8_t *)(ret.data() + 12));
+    ret[0] = ( (uint8_t)(ret[0]) | 128 );
     return ret;
 }
 
 void InitializationVector::initiate() {
-    qsrand((quint32)(QTime::currentTime().msecsTo(QTime(23,59,59,999))));
+    std::srand((uint32_t)(QTime::currentTime().msecsTo(QTime(23,59,59,999))));
 }
 
 /* *** CBC *** */
 
-CBC::CBC(QSharedPointer<Key> k, Algorithm a) {
+CBC::CBC(std::shared_ptr<Key> k, Algorithm a) {
     algorithm = a;
     key = k;
     reset();
@@ -587,7 +597,7 @@ void CBC::reset() {
  * documentation missing
  *
  */
-QByteArray CBC::encrypt(const QByteArray plain, bool end) {
+std::vector<uint8_t> CBC::encrypt(const std::vector<uint8_t> plain, bool end) {
     int cipherpos = 0;
     int padsize = -1;
     bool iv = false;
@@ -617,7 +627,7 @@ QByteArray CBC::encrypt(const QByteArray plain, bool end) {
             break;
         default:
             buffer.clear();
-            return QByteArray();
+            return std::vector<uint8_t>();
         }
     }
     buffer.append(plain);
@@ -627,10 +637,10 @@ QByteArray CBC::encrypt(const QByteArray plain, bool end) {
     if (iv) cipherlen += cbcBuffer.size();
     if (end) cipherlen += worksize;
 
-    QByteArray cipher = QByteArray(cipherlen, 0);
+    std::vector<uint8_t> cipher = std::vector<uint8_t>(cipherlen, 0);
 
     if (end) {
-        buffer.append(QByteArray(padsize, (char)padsize));
+        buffer.append(std::vector<uint8_t>(padsize, (char)padsize));
     }
 
     if ( iv ) while (cipherpos < worksize) {
@@ -638,23 +648,23 @@ QByteArray CBC::encrypt(const QByteArray plain, bool end) {
         cipherpos++;
     }
 
-    uchar *bufdat = (uchar *)buffer.data();
-    uchar *cipdat = (uchar *)cipher.data();
-    uchar *cbcdat = (uchar *)cbcBuffer.data();
+    uint8_t *bufdat = (uint8_t *)buffer.data();
+    uint8_t *cipdat = (uint8_t *)cipher.data();
+    uint8_t *cbcdat = (uint8_t *)cbcBuffer.data();
     int bufpos = 0;
 
     switch (algorithm) {
 #ifdef WITHRC5
     case RC5_32_32_20:
         {
-            quint32 cbc1 = qFromLittleEndian<quint32>(cbcdat);
-            quint32 cbc2 = qFromLittleEndian<quint32>(cbcdat + 4);
-            quint32 buf1;
-            quint32 buf2;
+            uint32_t cbc1 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(cbcdat));
+            uint32_t cbc2 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(cbcdat + 4));
+            uint32_t buf1;
+            uint32_t buf2;
 
             while ( cipherpos < cipherlen ) {
-                buf1 = qFromLittleEndian<quint32>(bufdat + bufpos);
-                buf2 = qFromLittleEndian<quint32>(bufdat + bufpos + 4);
+                buf1 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(bufdat + bufpos));
+                buf2 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(bufdat + bufpos + 4));
                 cbc1 ^= buf1;
                 cbc2 ^= buf2;
                 rc5_32_encrypt_2w(cbc1, cbc2, key->s32);
@@ -671,14 +681,14 @@ QByteArray CBC::encrypt(const QByteArray plain, bool end) {
         break;
     case RC5_64_32_20:
         {
-            quint64 cbc1 = qFromLittleEndian<quint64>(cbcdat);
-            quint64 cbc2 = qFromLittleEndian<quint64>(cbcdat + 8);
-            quint64 buf1;
-            quint64 buf2;
+            uint64_t cbc1 = fromLittleEndian64(*reinterpret_cast<uint64_t*>(cbcdat));
+            uint64_t cbc2 = fromLittleEndian64(*reinterpret_cast<uint64_t*>(cbcdat + 8));
+            uint64_t buf1;
+            uint64_t buf2;
 
             while ( cipherpos < cipherlen ) {
-                buf1 = qFromLittleEndian<quint64>(bufdat + bufpos);
-                buf2 = qFromLittleEndian<quint64>(bufdat + bufpos + 8);
+                buf1 = fromLittleEndian64(*reinterpret_cast<uint64_t*>(bufdat + bufpos));
+                buf2 = fromLittleEndian64(*reinterpret_cast<uint64_t*>(bufdat + bufpos + 8));
                 cbc1 ^= buf1;
                 cbc2 ^= buf2;
                 rc5_64_encrypt_2w(cbc1, cbc2, key->s64);
@@ -696,20 +706,20 @@ QByteArray CBC::encrypt(const QByteArray plain, bool end) {
 #endif
     case SERPENT_32:
         {
-            quint32 cbc1 = qFromLittleEndian<quint32>(cbcdat);
-            quint32 cbc2 = qFromLittleEndian<quint32>(cbcdat + 4);
-            quint32 cbc3 = qFromLittleEndian<quint32>(cbcdat + 8);
-            quint32 cbc4 = qFromLittleEndian<quint32>(cbcdat + 12);
-            quint32 buf1;
-            quint32 buf2;
-            quint32 buf3;
-            quint32 buf4;
+            uint32_t cbc1 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(cbcdat));
+            uint32_t cbc2 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(cbcdat + 4));
+            uint32_t cbc3 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(cbcdat + 8));
+            uint32_t cbc4 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(cbcdat + 12));
+            uint32_t buf1;
+            uint32_t buf2;
+            uint32_t buf3;
+            uint32_t buf4;
 
             while ( cipherpos < cipherlen ) {
-                buf1 = qFromLittleEndian<quint64>(bufdat + bufpos);
-                buf2 = qFromLittleEndian<quint64>(bufdat + bufpos + 4);
-                buf3 = qFromLittleEndian<quint64>(bufdat + bufpos + 8);
-                buf4 = qFromLittleEndian<quint64>(bufdat + bufpos + 12);
+                buf1 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(bufdat + bufpos));
+                buf2 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(bufdat + bufpos + 4));
+                buf3 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(bufdat + bufpos + 8));
+                buf4 = fromLittleEndian32(*reinterpret_cast<uint32_t*>(bufdat + bufpos + 12));
                 cbc1 ^= buf1;
                 cbc2 ^= buf2;
                 cbc3 ^= buf3;
@@ -743,7 +753,7 @@ QByteArray CBC::encrypt(const QByteArray plain, bool end) {
     return cipher;
 }
 
-QByteArray CBC::decrypt(const QByteArray cipher, bool end) {
+std::vector<uint8_t> CBC::decrypt(const std::vector<uint8_t> cipher, bool end) {
     int bufferpos = 0;
     int plainpos = 0;
 
@@ -752,14 +762,14 @@ QByteArray CBC::decrypt(const QByteArray cipher, bool end) {
         switch (algorithm) {
 #ifdef WITHRC5
         case RC5_32_32_20:
-            if ( buffer.size() < 8 ) return QByteArray();
+            if ( buffer.size() < 8 ) return std::vector<uint8_t>();
             cbcBuffer = buffer.left(8);
             worksize = 8;
             bufferpos = 8;
             key->expandKeyRc532();
             break;
         case RC5_64_32_20:
-            if ( buffer.size() < 16 ) return QByteArray();
+            if ( buffer.size() < 16 ) return std::vector<uint8_t>();
             cbcBuffer = buffer.left(16);
             worksize = 16;
             bufferpos = 16;
@@ -767,7 +777,7 @@ QByteArray CBC::decrypt(const QByteArray cipher, bool end) {
             break;
 #endif
         case SERPENT_32:
-            if ( buffer.size() < 16 ) return QByteArray();
+            if ( buffer.size() < 16 ) return std::vector<uint8_t>();
             cbcBuffer = buffer.left(16);
             worksize = 16;
             bufferpos = 16;
@@ -775,35 +785,35 @@ QByteArray CBC::decrypt(const QByteArray cipher, bool end) {
             break;
         default:
             buffer.clear();
-            return QByteArray();
+            return std::vector<uint8_t>();
         }
     }
 
     int plainlen = ( (buffer.size() - bufferpos) / worksize ) * worksize + padHostageBuffer.size();
-    QByteArray plain(plainlen, 0);
+    std::vector<uint8_t> plain(plainlen, 0);
     while (plainpos < padHostageBuffer.size()) {
         plain[plainpos] = padHostageBuffer[plainpos];
         plainpos++;
     }
     padHostageBuffer.clear();
 
-    uchar *bufdat = (uchar *)buffer.data();
-    uchar *plndat = (uchar *)plain.data();
-    uchar *cbcdat = (uchar *)cbcBuffer.data();
+    uint8_t *bufdat = (uint8_t *)buffer.data();
+    uint8_t *plndat = (uint8_t *)plain.data();
+    uint8_t *cbcdat = (uint8_t *)cbcBuffer.data();
 
     switch (algorithm) {
 #ifdef WITHRC5
     case RC5_32_32_20:
         {
-            quint32 cbc1 = qFromLittleEndian<quint32>(cbcdat);
-            quint32 cbc2 = qFromLittleEndian<quint32>(cbcdat + 4);
-            quint32 buf1;
-            quint32 buf2;
-            quint32 pln1;
-            quint32 pln2;
+            uint32_t cbc1 = qFromLittleEndian<uint32_t>(cbcdat);
+            uint32_t cbc2 = qFromLittleEndian<uint32_t>(cbcdat + 4);
+            uint32_t buf1;
+            uint32_t buf2;
+            uint32_t pln1;
+            uint32_t pln2;
             while ( plainpos < plainlen ) {
-                pln1 = buf1 = qFromLittleEndian<quint32>(bufdat + bufferpos);
-                pln2 = buf2 = qFromLittleEndian<quint32>(bufdat + bufferpos + 4);
+                pln1 = buf1 = qFromLittleEndian<uint32_t>(bufdat + bufferpos);
+                pln2 = buf2 = qFromLittleEndian<uint32_t>(bufdat + bufferpos + 4);
                 rc5_32_decrypt_2w(pln1,pln2,key->s32);
                 qToLittleEndian( (pln1 ^ cbc1) , plndat + plainpos);
                 qToLittleEndian( (pln2 ^ cbc2) , plndat + plainpos + 4);
@@ -819,15 +829,15 @@ QByteArray CBC::decrypt(const QByteArray cipher, bool end) {
         break;
     case RC5_64_32_20:
         {
-            quint64 cbc1 = qFromLittleEndian<quint64>(cbcdat);
-            quint64 cbc2 = qFromLittleEndian<quint64>(cbcdat + 8);
-            quint64 buf1;
-            quint64 buf2;
-            quint64 pln1;
-            quint64 pln2;
+            uint64_t cbc1 = qFromLittleEndian<uint64_t>(cbcdat);
+            uint64_t cbc2 = qFromLittleEndian<uint64_t>(cbcdat + 8);
+            uint64_t buf1;
+            uint64_t buf2;
+            uint64_t pln1;
+            uint64_t pln2;
             while ( plainpos < plainlen ) {
-                pln1 = buf1 = qFromLittleEndian<quint64>(bufdat + bufferpos);
-                pln2 = buf2 = qFromLittleEndian<quint64>(bufdat + bufferpos + 8);
+                pln1 = buf1 = qFromLittleEndian<uint64_t>(bufdat + bufferpos);
+                pln2 = buf2 = qFromLittleEndian<uint64_t>(bufdat + bufferpos + 8);
                 rc5_64_decrypt_2w(pln1,pln2,key->s64);
                 qToLittleEndian( (pln1 ^ cbc1) , plndat + plainpos);
                 qToLittleEndian( (pln2 ^ cbc2) , plndat + plainpos + 8);
@@ -844,23 +854,23 @@ QByteArray CBC::decrypt(const QByteArray cipher, bool end) {
 #endif
     case SERPENT_32:
         {
-            quint32 cbc1 = qFromLittleEndian<quint32>(cbcdat);
-            quint32 cbc2 = qFromLittleEndian<quint32>(cbcdat + 4);
-            quint32 cbc3 = qFromLittleEndian<quint32>(cbcdat + 8);
-            quint32 cbc4 = qFromLittleEndian<quint32>(cbcdat + 12);
-            quint32 buf1;
-            quint32 buf2;
-            quint32 buf3;
-            quint32 buf4;
-            quint32 pln1;
-            quint32 pln2;
-            quint32 pln3;
-            quint32 pln4;
+            uint32_t cbc1 = qFromLittleEndian<uint32_t>(cbcdat);
+            uint32_t cbc2 = qFromLittleEndian<uint32_t>(cbcdat + 4);
+            uint32_t cbc3 = qFromLittleEndian<uint32_t>(cbcdat + 8);
+            uint32_t cbc4 = qFromLittleEndian<uint32_t>(cbcdat + 12);
+            uint32_t buf1;
+            uint32_t buf2;
+            uint32_t buf3;
+            uint32_t buf4;
+            uint32_t pln1;
+            uint32_t pln2;
+            uint32_t pln3;
+            uint32_t pln4;
             while ( plainpos < plainlen ) {
-                pln1 = buf1 = qFromLittleEndian<quint32>(bufdat+bufferpos);
-                pln2 = buf2 = qFromLittleEndian<quint32>(bufdat+bufferpos + 4);
-                pln3 = buf3 = qFromLittleEndian<quint32>(bufdat+bufferpos + 8);
-                pln4 = buf4 = qFromLittleEndian<quint32>(bufdat+bufferpos + 12);
+                pln1 = buf1 = qFromLittleEndian<uint32_t>(bufdat+bufferpos);
+                pln2 = buf2 = qFromLittleEndian<uint32_t>(bufdat+bufferpos + 4);
+                pln3 = buf3 = qFromLittleEndian<uint32_t>(bufdat+bufferpos + 8);
+                pln4 = buf4 = qFromLittleEndian<uint32_t>(bufdat+bufferpos + 12);
                 serpent_decrypt_4w(pln1,pln2,pln3,pln4,key->serpent);
                 qToLittleEndian( (pln1 ^ cbc1) , plndat + plainpos);
                 qToLittleEndian( (pln2 ^ cbc2) , plndat + plainpos + 4);
@@ -909,9 +919,9 @@ QByteArray CBC::decrypt(const QByteArray cipher, bool end) {
         // but end=false anyways. in this case, we must not
         // return possible pad data as plain text
         if ( buffer.size() == 0 && plainlen > 0 ) {
-            uchar lastByte = plain[plainlen - 1];
+            uint8_t lastByte = plain[plainlen - 1];
             if ( 0 < lastByte && lastByte <= 16 ) {
-                QByteArray padPattern((int)lastByte,(char)lastByte);
+                std::vector<uint8_t> padPattern((int)lastByte,(char)lastByte);
                 if (plain.endsWith(padPattern)) {
                     padHostageBuffer = plain.right(worksize);
                     plain = plain.left(plainlen - worksize);
@@ -927,7 +937,7 @@ QByteArray CBC::decrypt(const QByteArray cipher, bool end) {
 
 /* *** CFB *** */
 
-CFB::CFB(QSharedPointer<Key> k, Algorithm a) {
+CFB::CFB(std::shared_ptr<Key> k, Algorithm a) {
     algorithm = a;
     key = k;
     reset();
@@ -958,14 +968,14 @@ void CFB::reset() {
  *
  *
  */
-QByteArray CFB::encrypt(const QByteArray plain, bool end) {
+std::vector<uint8_t> CFB::encrypt(const std::vector<uint8_t> plain, bool end) {
     int plainpos = 0;
     int plainlen = plain.size();
     int cipherpos = 0;
     int bufferlen = buffer.size();
     int copysize = 0;
-    QByteArray cipher(plainlen, 0);
-    uchar *bufdat = 0;
+    std::vector<uint8_t> cipher(plainlen, 0);
+    uint8_t *bufdat = 0;
 
     // set initialization vector if first data
     if ( -1 == bufferpos ) {
@@ -989,17 +999,17 @@ QByteArray CFB::encrypt(const QByteArray plain, bool end) {
             break;
         default:
             buffer.clear();
-            return QByteArray();
+            return std::vector<uint8_t>();
         }
         cipher.prepend(buffer);
         bufferpos = bufferlen;
         cipherpos += bufferlen;
     }
 
-    bufdat = (uchar *)(buffer.data());
+    bufdat = (uint8_t *)(buffer.data());
 
-    uchar *cphdat = (uchar *)cipher.data();
-    uchar *plndat = (uchar *)plain.data();
+    uint8_t *cphdat = (uint8_t *)cipher.data();
+    uint8_t *plndat = (uint8_t *)plain.data();
 
     copysize = qMin( bufferlen - bufferpos , plainlen - plainpos );
     // in case the buffer contains unused data from last encrypt,
@@ -1020,15 +1030,15 @@ QByteArray CFB::encrypt(const QByteArray plain, bool end) {
 #ifdef WITHRC5
         case RC5_32_32_20:
             {
-            quint32 B1 = qFromLittleEndian<quint32>(bufdat);
-            quint32 B2 = qFromLittleEndian<quint32>(bufdat + 4);
-            quint32 P1 = 0;
-            quint32 P2 = 0;
+            uint32_t B1 = qFromLittleEndian<uint32_t>(bufdat);
+            uint32_t B2 = qFromLittleEndian<uint32_t>(bufdat + 4);
+            uint32_t P1 = 0;
+            uint32_t P2 = 0;
 
             do {
                 rc5_32_encrypt_2w(B1,B2,key->s32);
-                P1 = qFromLittleEndian<quint32>(plndat + plainpos);
-                P2 = qFromLittleEndian<quint32>(plndat + plainpos + 4);
+                P1 = qFromLittleEndian<uint32_t>(plndat + plainpos);
+                P2 = qFromLittleEndian<uint32_t>(plndat + plainpos + 4);
                 B1 ^= P1;
                 B2 ^= P2;
                 qToLittleEndian(B1, cphdat + cipherpos);
@@ -1043,15 +1053,15 @@ QByteArray CFB::encrypt(const QByteArray plain, bool end) {
             break;
         case RC5_64_32_20:
             {
-            quint64 B1 = qFromLittleEndian<quint64>(bufdat);
-            quint64 B2 = qFromLittleEndian<quint64>(bufdat + 8);
-            quint64 P1 = 0;
-            quint64 P2 = 0;
+            uint64_t B1 = qFromLittleEndian<uint64_t>(bufdat);
+            uint64_t B2 = qFromLittleEndian<uint64_t>(bufdat + 8);
+            uint64_t P1 = 0;
+            uint64_t P2 = 0;
 
             do {
                 rc5_64_encrypt_2w(B1,B2,key->s64);
-                P1 = qFromLittleEndian<quint64>(plndat + plainpos);
-                P2 = qFromLittleEndian<quint64>(plndat + plainpos + 8);
+                P1 = qFromLittleEndian<uint64_t>(plndat + plainpos);
+                P2 = qFromLittleEndian<uint64_t>(plndat + plainpos + 8);
                 B1 ^= P1;
                 B2 ^= P2;
                 qToLittleEndian(B1, cphdat + cipherpos);
@@ -1067,21 +1077,21 @@ QByteArray CFB::encrypt(const QByteArray plain, bool end) {
 #endif
         case SERPENT_32:
             {
-            quint32 B1 = qFromLittleEndian<quint64>(bufdat);
-            quint32 B2 = qFromLittleEndian<quint64>(bufdat + 4);
-            quint32 B3 = qFromLittleEndian<quint64>(bufdat + 8);
-            quint32 B4 = qFromLittleEndian<quint64>(bufdat + 12);
-            quint32 P1 = 0;
-            quint32 P2 = 0;
-            quint32 P3 = 0;
-            quint32 P4 = 0;
+            uint32_t B1 = qFromLittleEndian<uint64_t>(bufdat);
+            uint32_t B2 = qFromLittleEndian<uint64_t>(bufdat + 4);
+            uint32_t B3 = qFromLittleEndian<uint64_t>(bufdat + 8);
+            uint32_t B4 = qFromLittleEndian<uint64_t>(bufdat + 12);
+            uint32_t P1 = 0;
+            uint32_t P2 = 0;
+            uint32_t P3 = 0;
+            uint32_t P4 = 0;
 
             do {
                 serpent_encrypt_4w(B1,B2,B3,B4,key->serpent);
-                P1 = qFromLittleEndian<quint32>(plndat + plainpos);
-                P2 = qFromLittleEndian<quint32>(plndat + plainpos + 4);
-                P3 = qFromLittleEndian<quint32>(plndat + plainpos + 8);
-                P4 = qFromLittleEndian<quint32>(plndat + plainpos + 12);
+                P1 = qFromLittleEndian<uint32_t>(plndat + plainpos);
+                P2 = qFromLittleEndian<uint32_t>(plndat + plainpos + 4);
+                P3 = qFromLittleEndian<uint32_t>(plndat + plainpos + 8);
+                P4 = qFromLittleEndian<uint32_t>(plndat + plainpos + 12);
                 B1 ^= P1;
                 B2 ^= P2;
                 B3 ^= P3;
@@ -1112,8 +1122,8 @@ QByteArray CFB::encrypt(const QByteArray plain, bool end) {
 #ifdef WITHRC5
         case RC5_32_32_20:
             {
-            quint32 X32_1 = qFromLittleEndian<quint32>(bufdat);
-            quint32 X32_2 = qFromLittleEndian<quint32>(bufdat + 4);
+            uint32_t X32_1 = qFromLittleEndian<uint32_t>(bufdat);
+            uint32_t X32_2 = qFromLittleEndian<uint32_t>(bufdat + 4);
             rc5_32_encrypt_2w(X32_1,X32_2,key->s32);
             qToLittleEndian(X32_1, bufdat);
             qToLittleEndian(X32_2, bufdat + 4);
@@ -1121,8 +1131,8 @@ QByteArray CFB::encrypt(const QByteArray plain, bool end) {
             break;
         case RC5_64_32_20:
             {
-            quint64 X64_1 = qFromLittleEndian<quint64>(bufdat);
-            quint64 X64_2 = qFromLittleEndian<quint64>(bufdat + 8);
+            uint64_t X64_1 = qFromLittleEndian<uint64_t>(bufdat);
+            uint64_t X64_2 = qFromLittleEndian<uint64_t>(bufdat + 8);
             rc5_64_encrypt_2w(X64_1,X64_2,key->s64);
             qToLittleEndian(X64_1, bufdat);
             qToLittleEndian(X64_2, bufdat + 8);
@@ -1131,10 +1141,10 @@ QByteArray CFB::encrypt(const QByteArray plain, bool end) {
 #endif
         case SERPENT_32:
             {
-            quint32 X32_1 = qFromLittleEndian<quint32>(bufdat);
-            quint32 X32_2 = qFromLittleEndian<quint32>(bufdat + 4);
-            quint32 X32_3 = qFromLittleEndian<quint32>(bufdat + 8);
-            quint32 X32_4 = qFromLittleEndian<quint32>(bufdat + 12);
+            uint32_t X32_1 = qFromLittleEndian<uint32_t>(bufdat);
+            uint32_t X32_2 = qFromLittleEndian<uint32_t>(bufdat + 4);
+            uint32_t X32_3 = qFromLittleEndian<uint32_t>(bufdat + 8);
+            uint32_t X32_4 = qFromLittleEndian<uint32_t>(bufdat + 12);
             serpent_encrypt_4w(X32_1,X32_2,X32_3,X32_4,key->serpent);
             qToLittleEndian(X32_1, bufdat);
             qToLittleEndian(X32_2, bufdat + 4);
@@ -1182,15 +1192,15 @@ QByteArray CFB::encrypt(const QByteArray plain, bool end) {
  *   buffer = cipher
  *
  */
-QByteArray CFB::decrypt(const QByteArray cipher, bool end) {
+std::vector<uint8_t> CFB::decrypt(const std::vector<uint8_t> cipher, bool end) {
     int cipherpos = 0;
     int cipherlen = cipher.size();
     int bufferlen = -1;
     int copysize = 0;
     int plainpos = 0;
-    uchar *bufdat = 0;
-    uchar *cphdat = 0;
-    uchar *plndat = 0;
+    uint8_t *bufdat = 0;
+    uint8_t *cphdat = 0;
+    uint8_t *plndat = 0;
 
     // as long as bufferpos == -1, the initialization vector
     // has not yet been loaded
@@ -1211,7 +1221,7 @@ QByteArray CFB::decrypt(const QByteArray cipher, bool end) {
             bufferlen = 16;
             break;
         default:
-            return QByteArray();
+            return std::vector<uint8_t>();
         }
         copysize = qMin ( bufferlen - buffer.size() , cipherlen );
         buffer.append(cipher.left(copysize));
@@ -1219,17 +1229,17 @@ QByteArray CFB::decrypt(const QByteArray cipher, bool end) {
         if ( bufferlen == buffer.size() ) {
             bufferpos = bufferlen;
         } else {
-            return QByteArray();
+            return std::vector<uint8_t>();
         }
     } else {
         bufferlen = buffer.size();
     }
 
-    QByteArray plain(cipherlen - cipherpos, 0);
+    std::vector<uint8_t> plain(cipherlen - cipherpos, 0);
 
-    bufdat = (uchar *)(buffer.data());
-    cphdat = (uchar *)(cipher.data());
-    plndat = (uchar *)(plain.data());
+    bufdat = (uint8_t *)(buffer.data());
+    cphdat = (uint8_t *)(cipher.data());
+    plndat = (uint8_t *)(plain.data());
 
     copysize = qMin( bufferlen - bufferpos , cipherlen - cipherpos );
     while ( 0 < copysize ) {
@@ -1248,15 +1258,15 @@ QByteArray CFB::decrypt(const QByteArray cipher, bool end) {
 #ifdef WITHRC5
         case RC5_32_32_20:
             {
-                quint32 B1 = qFromLittleEndian<quint32>(bufdat);
-                quint32 B2 = qFromLittleEndian<quint32>(bufdat + 4);
-                quint32 C1 = 0;
-                quint32 C2 = 0;
+                uint32_t B1 = qFromLittleEndian<uint32_t>(bufdat);
+                uint32_t B2 = qFromLittleEndian<uint32_t>(bufdat + 4);
+                uint32_t C1 = 0;
+                uint32_t C2 = 0;
 
                 do {
                     rc5_32_encrypt_2w(B1,B2,key->s32);
-                    C1 = qFromLittleEndian<quint32>(cphdat + cipherpos);
-                    C2 = qFromLittleEndian<quint32>(cphdat + cipherpos + 4);
+                    C1 = qFromLittleEndian<uint32_t>(cphdat + cipherpos);
+                    C2 = qFromLittleEndian<uint32_t>(cphdat + cipherpos + 4);
                     B1 ^= C1;
                     B2 ^= C2;
                     qToLittleEndian(B1, plndat + plainpos);
@@ -1273,15 +1283,15 @@ QByteArray CFB::decrypt(const QByteArray cipher, bool end) {
             break;
         case RC5_64_32_20:
             {
-                quint64 B1 = qFromLittleEndian<quint64>(bufdat);
-                quint64 B2 = qFromLittleEndian<quint64>(bufdat + 8);
-                quint64 C1 = 0;
-                quint64 C2 = 0;
+                uint64_t B1 = qFromLittleEndian<uint64_t>(bufdat);
+                uint64_t B2 = qFromLittleEndian<uint64_t>(bufdat + 8);
+                uint64_t C1 = 0;
+                uint64_t C2 = 0;
 
                 do {
                     rc5_64_encrypt_2w(B1,B2,key->s64);
-                    C1 = qFromLittleEndian<quint64>(cphdat + cipherpos);
-                    C2 = qFromLittleEndian<quint64>(cphdat + cipherpos + 8);
+                    C1 = qFromLittleEndian<uint64_t>(cphdat + cipherpos);
+                    C2 = qFromLittleEndian<uint64_t>(cphdat + cipherpos + 8);
                     B1 ^= C1;
                     B2 ^= C2;
                     qToLittleEndian(B1, plndat + plainpos);
@@ -1299,21 +1309,21 @@ QByteArray CFB::decrypt(const QByteArray cipher, bool end) {
 #endif
         case SERPENT_32:
             {
-                quint32 B1 = qFromLittleEndian<quint32>(bufdat);
-                quint32 B2 = qFromLittleEndian<quint32>(bufdat + 4);
-                quint32 B3 = qFromLittleEndian<quint32>(bufdat + 8);
-                quint32 B4 = qFromLittleEndian<quint32>(bufdat + 12);
-                quint32 C1 = 0;
-                quint32 C2 = 0;
-                quint32 C3 = 0;
-                quint32 C4 = 0;
+                uint32_t B1 = qFromLittleEndian<uint32_t>(bufdat);
+                uint32_t B2 = qFromLittleEndian<uint32_t>(bufdat + 4);
+                uint32_t B3 = qFromLittleEndian<uint32_t>(bufdat + 8);
+                uint32_t B4 = qFromLittleEndian<uint32_t>(bufdat + 12);
+                uint32_t C1 = 0;
+                uint32_t C2 = 0;
+                uint32_t C3 = 0;
+                uint32_t C4 = 0;
 
                 do {
                     serpent_encrypt_4w(B1,B2,B3,B4,key->serpent);
-                    C1 = qFromLittleEndian<quint32>(cphdat + cipherpos);
-                    C2 = qFromLittleEndian<quint32>(cphdat + cipherpos + 4);
-                    C3 = qFromLittleEndian<quint32>(cphdat + cipherpos + 8);
-                    C4 = qFromLittleEndian<quint32>(cphdat + cipherpos + 12);
+                    C1 = qFromLittleEndian<uint32_t>(cphdat + cipherpos);
+                    C2 = qFromLittleEndian<uint32_t>(cphdat + cipherpos + 4);
+                    C3 = qFromLittleEndian<uint32_t>(cphdat + cipherpos + 8);
+                    C4 = qFromLittleEndian<uint32_t>(cphdat + cipherpos + 12);
                     B1 ^= C1;
                     B2 ^= C2;
                     B3 ^= C3;
@@ -1348,8 +1358,8 @@ QByteArray CFB::decrypt(const QByteArray cipher, bool end) {
 #ifdef WITHRC5
         case RC5_32_32_20:
             {
-            quint32 X32_1 = qFromLittleEndian<quint32>(bufdat);
-            quint32 X32_2 = qFromLittleEndian<quint32>(bufdat + 4);
+            uint32_t X32_1 = qFromLittleEndian<uint32_t>(bufdat);
+            uint32_t X32_2 = qFromLittleEndian<uint32_t>(bufdat + 4);
             rc5_32_encrypt_2w(X32_1,X32_2,key->s32);
             qToLittleEndian(X32_1, bufdat);
             qToLittleEndian(X32_2, bufdat + 4);
@@ -1357,8 +1367,8 @@ QByteArray CFB::decrypt(const QByteArray cipher, bool end) {
             break;
         case RC5_64_32_20:
             {
-            quint64 X64_1 = qFromLittleEndian<quint64>(bufdat);
-            quint64 X64_2 = qFromLittleEndian<quint64>(bufdat + 8);
+            uint64_t X64_1 = qFromLittleEndian<uint64_t>(bufdat);
+            uint64_t X64_2 = qFromLittleEndian<uint64_t>(bufdat + 8);
             rc5_64_encrypt_2w(X64_1,X64_2,key->s64);
             qToLittleEndian(X64_1, bufdat);
             qToLittleEndian(X64_2, bufdat + 8);
@@ -1367,10 +1377,10 @@ QByteArray CFB::decrypt(const QByteArray cipher, bool end) {
 #endif
         case SERPENT_32:
             {
-            quint32 X32_1 = qFromLittleEndian<quint32>(bufdat);
-            quint32 X32_2 = qFromLittleEndian<quint32>(bufdat + 4);
-            quint32 X32_3 = qFromLittleEndian<quint32>(bufdat + 8);
-            quint32 X32_4 = qFromLittleEndian<quint32>(bufdat + 12);
+            uint32_t X32_1 = qFromLittleEndian<uint32_t>(bufdat);
+            uint32_t X32_2 = qFromLittleEndian<uint32_t>(bufdat + 4);
+            uint32_t X32_3 = qFromLittleEndian<uint32_t>(bufdat + 8);
+            uint32_t X32_4 = qFromLittleEndian<uint32_t>(bufdat + 12);
             serpent_encrypt_4w(X32_1,X32_2,X32_3,X32_4,key->serpent);
             qToLittleEndian(X32_1, bufdat);
             qToLittleEndian(X32_2, bufdat + 4);
@@ -1403,9 +1413,9 @@ QByteArray CFB::decrypt(const QByteArray cipher, bool end) {
 
 
 #ifdef WITHRC5
-void rc5_32_encrypt_2w(quint32 &X1, quint32 &X2, const quint32 *s) {
-    quint32 x1 = X1 + s[0];
-    quint32 x2 = X2 + s[1];
+void rc5_32_encrypt_2w(uint32_t &X1, uint32_t &X2, const uint32_t *s) {
+    uint32_t x1 = X1 + s[0];
+    uint32_t x2 = X2 + s[1];
     int r;
     for ( int i = 1 ; i <= ROUNDS ; i++ ) {
         r = x2 & 31;
@@ -1422,9 +1432,9 @@ void rc5_32_encrypt_2w(quint32 &X1, quint32 &X2, const quint32 *s) {
     X2 = x2;
 }
 
-void rc5_64_encrypt_2w(quint64 &X1, quint64 &X2, const quint64 *s) {
-    quint64 x1 = X1 + s[0];
-    quint64 x2 = X2 + s[1];
+void rc5_64_encrypt_2w(uint64_t &X1, uint64_t &X2, const uint64_t *s) {
+    uint64_t x1 = X1 + s[0];
+    uint64_t x2 = X2 + s[1];
     int r;
     for ( int i = 1 ; i <= ROUNDS ; i++ ) {
         r = x2 & 63;
@@ -1439,9 +1449,9 @@ void rc5_64_encrypt_2w(quint64 &X1, quint64 &X2, const quint64 *s) {
     X2 = x2;
 }
 
-void rc5_32_decrypt_2w(quint32 &X1, quint32 &X2, const quint32 *s) {
-    quint32 x1 = X1;
-    quint32 x2 = X2;
+void rc5_32_decrypt_2w(uint32_t &X1, uint32_t &X2, const uint32_t *s) {
+    uint32_t x1 = X1;
+    uint32_t x2 = X2;
     int r;
     for ( int i = ROUNDS ; i > 0 ; i-- ) {
         r = x1 & 31;
@@ -1460,9 +1470,9 @@ void rc5_32_decrypt_2w(quint32 &X1, quint32 &X2, const quint32 *s) {
     X1 = x1;
 }
 
-void rc5_64_decrypt_2w(quint64 &X1, quint64 &X2, const quint64 *s) {
-    quint64 x1 = X1;
-    quint64 x2 = X2;
+void rc5_64_decrypt_2w(uint64_t &X1, uint64_t &X2, const uint64_t *s) {
+    uint64_t x1 = X1;
+    uint64_t x2 = X2;
     int r;
     for ( int i = ROUNDS ; i > 0 ; i-- ) {
         r = x1 & 63;
@@ -1481,33 +1491,33 @@ void rc5_64_decrypt_2w(quint64 &X1, quint64 &X2, const quint64 *s) {
 
 
 
-void rc5_32_encrypt_8b(const uchar *plain8, uchar *cipher8, const quint32 *s) {
-    quint32 X1 = qFromLittleEndian<quint32>(plain8);
-    quint32 X2 = qFromLittleEndian<quint32>(plain8 + 4);
+void rc5_32_encrypt_8b(const uint8_t *plain8, uint8_t *cipher8, const uint32_t *s) {
+    uint32_t X1 = qFromLittleEndian<uint32_t>(plain8);
+    uint32_t X2 = qFromLittleEndian<uint32_t>(plain8 + 4);
     rc5_32_encrypt_2w(X1, X2, s);
     qToLittleEndian(X1, cipher8);
     qToLittleEndian(X2, cipher8 + 4);
 }
 
-void rc5_64_encrypt_16b(const uchar *plain16, uchar *cipher16, const quint64 *s) {
-    quint64 X1 = qFromLittleEndian<quint64>(plain16);
-    quint64 X2 = qFromLittleEndian<quint64>(plain16 + 8);
+void rc5_64_encrypt_16b(const uint8_t *plain16, uint8_t *cipher16, const uint64_t *s) {
+    uint64_t X1 = qFromLittleEndian<uint64_t>(plain16);
+    uint64_t X2 = qFromLittleEndian<uint64_t>(plain16 + 8);
     rc5_64_encrypt_2w(X1, X2, s);
     qToLittleEndian(X1, cipher16);
     qToLittleEndian(X2, cipher16 + 8);
 }
 
-void rc5_32_decrypt_8b(const uchar *cipher8, uchar *plain8, const quint32 *s) {
-    quint32 X1 = qFromLittleEndian<quint32>(cipher8);
-    quint32 X2 = qFromLittleEndian<quint32>(cipher8 + 4);
+void rc5_32_decrypt_8b(const uint8_t *cipher8, uint8_t *plain8, const uint32_t *s) {
+    uint32_t X1 = qFromLittleEndian<uint32_t>(cipher8);
+    uint32_t X2 = qFromLittleEndian<uint32_t>(cipher8 + 4);
     rc5_32_decrypt_2w(X1, X2, s);
     qToLittleEndian(X1, plain8);
     qToLittleEndian(X2, plain8 + 4);
 }
 
-void rc5_64_decrypt_16b(const uchar *cipher16, uchar *plain16, const quint64 *s) {
-    quint64 X1 = qFromLittleEndian<quint64>(cipher16);
-    quint64 X2 = qFromLittleEndian<quint64>(cipher16 + 8);
+void rc5_64_decrypt_16b(const uint8_t *cipher16, uint8_t *plain16, const uint64_t *s) {
+    uint64_t X1 = qFromLittleEndian<uint64_t>(cipher16);
+    uint64_t X2 = qFromLittleEndian<uint64_t>(cipher16 + 8);
     rc5_64_decrypt_2w(X1, X2, s);
     qToLittleEndian(X1, plain16);
     qToLittleEndian(X2, plain16 + 8);
@@ -1521,10 +1531,10 @@ void rc5_64_decrypt_16b(const uchar *cipher16, uchar *plain16, const quint64 *s)
 
 #ifdef WITH_SERPENT_FAST_SBOX
 
-quint32 serpent_sbox_fast(int sbox, quint32 X) {
+uint32_t serpent_sbox_fast(int sbox, uint32_t X) {
     int sbox512 = sbox * 512;
     quint16 Y = 0;
-    quint32 R = 0;
+    uint32_t R = 0;
 
     Y  = serpent_sbox_fast_data[ sbox512 + ( 0xff & X ) + 256 ];
     X >>= 8;
@@ -1573,10 +1583,10 @@ const quint8 serpent_sboxes[256] = {
  * since the same thing is done
  * Argument "sbox" > 8 means reverse sbox
  */
-void serpent_sbox_it(int sbox, quint32 &X1, quint32 &X2,
-                               quint32 &X3, quint32 &X4) {
-    quint32 i,j,tmp;
-    quint32 newword, mask, X;
+void serpent_sbox_it(int sbox, uint32_t &X1, uint32_t &X2,
+                               uint32_t &X3, uint32_t &X4) {
+    uint32_t i,j,tmp;
+    uint32_t newword, mask, X;
 
     X = X1;
     /* Data block is 128 bits, integer is 32 bits => 4 loops */	
@@ -1618,10 +1628,10 @@ void serpent_sbox_it(int sbox, quint32 &X1, quint32 &X2,
 #endif
 
 
-void serpent_encrypt_4w(quint32 &X1a, quint32 &X2a,
-                        quint32 &X3a, quint32 &X4a, const quint32 *s) {
+void serpent_encrypt_4w(uint32_t &X1a, uint32_t &X2a,
+                        uint32_t &X3a, uint32_t &X4a, const uint32_t *s) {
     int round, rm8;
-    quint32 X1, X2, X3, X4;
+    uint32_t X1, X2, X3, X4;
     /* LOOP THROUGH THE 32 ROUNDS */
 
     X1 = X1a;
@@ -1674,10 +1684,10 @@ void serpent_encrypt_4w(quint32 &X1a, quint32 &X2a,
 }
 
 
-void serpent_decrypt_4w(quint32 &X1a, quint32 &X2a,
-                        quint32 &X3a, quint32 &X4a, const quint32 *s) {
+void serpent_decrypt_4w(uint32_t &X1a, uint32_t &X2a,
+                        uint32_t &X3a, uint32_t &X4a, const uint32_t *s) {
     int round, rm8;
-    quint32 X1, X2, X3, X4;
+    uint32_t X1, X2, X3, X4;
 
     X1 = X1a ^ s[128];
     X2 = X2a ^ s[129];
@@ -1722,11 +1732,11 @@ void serpent_decrypt_4w(quint32 &X1a, quint32 &X2a,
     X4a = X4;
 }
 
-void serpent_encrypt_16b(const uchar *plain16, uchar *cipher16, const quint32 *s) {
-    quint32 X1 = qFromLittleEndian<quint32>(plain16);
-    quint32 X2 = qFromLittleEndian<quint32>(plain16 + 4);
-    quint32 X3 = qFromLittleEndian<quint32>(plain16 + 8);
-    quint32 X4 = qFromLittleEndian<quint32>(plain16 + 12);
+void serpent_encrypt_16b(const uint8_t *plain16, uint8_t *cipher16, const uint32_t *s) {
+    uint32_t X1 = qFromLittleEndian<uint32_t>(plain16);
+    uint32_t X2 = qFromLittleEndian<uint32_t>(plain16 + 4);
+    uint32_t X3 = qFromLittleEndian<uint32_t>(plain16 + 8);
+    uint32_t X4 = qFromLittleEndian<uint32_t>(plain16 + 12);
     serpent_encrypt_4w(X1, X2, X3, X4, s);
     qToLittleEndian(X1, cipher16);
     qToLittleEndian(X2, cipher16 + 4);
@@ -1734,11 +1744,11 @@ void serpent_encrypt_16b(const uchar *plain16, uchar *cipher16, const quint32 *s
     qToLittleEndian(X4, cipher16 + 12);
 }
 
-void serpent_decrypt_16b(const uchar *cipher16, uchar *plain16, const quint32 *s) {
-    quint32 X1 = qFromLittleEndian<quint32>(cipher16);
-    quint32 X2 = qFromLittleEndian<quint32>(cipher16 + 4);
-    quint32 X3 = qFromLittleEndian<quint32>(cipher16 + 8);
-    quint32 X4 = qFromLittleEndian<quint32>(cipher16 + 12);
+void serpent_decrypt_16b(const uint8_t *cipher16, uint8_t *plain16, const uint32_t *s) {
+    uint32_t X1 = qFromLittleEndian<uint32_t>(cipher16);
+    uint32_t X2 = qFromLittleEndian<uint32_t>(cipher16 + 4);
+    uint32_t X3 = qFromLittleEndian<uint32_t>(cipher16 + 8);
+    uint32_t X4 = qFromLittleEndian<uint32_t>(cipher16 + 12);
     serpent_decrypt_4w(X1, X2, X3, X4, s);
     qToLittleEndian(X1, plain16);
     qToLittleEndian(X2, plain16 + 4);
@@ -1751,7 +1761,7 @@ void serpent_decrypt_16b(const uchar *cipher16, uchar *plain16, const quint32 *s
 void serpent_print_sbox_h() {
     int sbox;
     int i;
-    quint32 X1, X2, X3, X4;
+    uint32_t X1, X2, X3, X4;
 
     i = X2 = X3 = X4 = 0;
 
